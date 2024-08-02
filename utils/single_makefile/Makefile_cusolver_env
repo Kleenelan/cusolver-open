@@ -1,0 +1,15 @@
+
+EXE := cusolver_env
+
+all: $(EXE)
+
+%: %.cpp
+	g++ -fopenmp $<  -DMAIN_ -o $@ $(INC) $(LD_FLAGS)
+
+INC := -I/usr/local/cuda/include 
+LD_FLAGS := -L/usr/local/cuda/lib64 -lcudart -lcusolver
+
+
+.PHONY: clean
+clean:
+	-rm -rf $(EXE)
