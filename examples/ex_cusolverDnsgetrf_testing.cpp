@@ -8,6 +8,8 @@
 #include <cusolverDn.h>
 #include <cublas_v2.h>
 
+#define SEED_A (2024)
+
 //int sgetrf_( int* M, int* N, float* h_A, int* lda, int* ipiv, int* info);
 
 
@@ -71,6 +73,11 @@ const char* solver_strerror( int err )
 
     @ingroup solver_wtime
 *******************************************************************************/
+/*
+void F77_sgemm(char *transpa, char *transpb, int *m, int *n,
+              int *k, float *alpha, float *a, int *lda, float *b, int *ldb,
+              float *beta, float *c, int *ldc );
+			  */
 extern "C"
 double solver_wtime( void )
 {
@@ -78,6 +85,57 @@ double solver_wtime( void )
     gettimeofday( &t, NULL );
     return t.tv_sec + t.tv_usec*1e-6;
 }
+
+
+// On input, LU and ipiv is LU factorization of A. On output, LU is overwritten.
+// Works for any m, n.
+// Uses init_matrix() to re-generate original A as needed.
+// Returns error in factorization, |PA - LU| / (n |A|)
+// This allocates 3 more matrices to store A, L, and U.
+float get_LU_error(
+    int M, int N,
+    float *LU, int lda,
+    int *ipiv)
+{
+	int min_mn = std::min(M,N);
+    int ione   = 1;
+    int i, j;
+    float alpha = 1.0f;
+    float beta  = 0.0f;
+    float *A, *L, *U;
+    float work[1], matnorm, residual;
+
+	A = (float*)malloc(lda*N*sizeof(float));
+	L = (float*)malloc(M * min_mn * sizeof(float));
+	U = (float*)malloc(min_mn * N * sizeof(float));
+	memset(L, 0, M * min_mn * sizeof(float));
+	memset(U, 0, min_mn * N * sizeof(float));
+
+	// set the same original matrix A
+	srand_rand_float(SEED_A, A, lda*N);
+	//int BLASFUNC(slaswp)(blasint *, float  *, blasint *, blasint *, blasint *, blasint *, blasint *);
+	slaswp_(&N, A, &lda, &ione, &min_mn, ipiv, &ione);
+
+    // copy LU to L and U, and set diagonal to 1// start
+    slacpy_("L", &M, &min_mn, LU, &lda, L, &M      ,1);
+    slacpy_("U", &min_mn, &N, LU, &lda, U, &min_mn ,1);
+	for(j=0; j<min_mn; j++)
+		L[j + j*M] = 1.0f;
+	//float LAPACKE_slange( int matrix_layout, char norm, lapack_int m,
+//                           lapack_int n, const float* a, lapack_int lda );
+	matnorm = slange_("F", &M, &N, A, &lda, work, 4);
+
+	//F77_sgemm("N", "N", &M, &N, &min_mn, &alpha, L, &M, U, &min_mn, &beta, LU, &lda);
+
+
+
+	free(A);
+	free(L);
+	free(U);
+
+    return residual / (matnorm * N);
+}
+
 
 
 //先写一个一摸一样的，cusolver 版本的 app
@@ -147,7 +205,7 @@ int main()
             /* ====================================================================
                Performs operation using cusolver-open
                =================================================================== */
-			srand_rand_float(2024, h_A, lda*N);
+			srand_rand_float(SEED_A, h_A, lda*N);
 			if (version == 2) {
                 // no pivoting versions, so set ipiv to identity
                 for (int i=0; i < min_mn; ++i ) {
@@ -173,10 +231,15 @@ cusolverDnSgetrf(cusolverDnHandle_t handle,
 			float *Workspace = nullptr;
 			int *info_d = nullptr;
 			int *ipiv_d = nullptr;
+			int *info_h = nullptr;
+			int *ipiv_h = nullptr;
+
 
 			cudaMalloc((void**)&Workspace, bufferSize*sizeof(float));
 			cudaMalloc((void**)info_d, sizeof(int));
 			cudaMalloc((void**)ipiv_d, min_mn*sizeof(int));
+			info_h = (int*)malloc(sizeof(int));
+			ipiv_h = (int*)malloc(min_mn*sizeof(int));
 
 			gpu_time = sover_wtime();
             if (version == 1) {
@@ -193,6 +256,8 @@ cusolverDnSgetrf(cusolverDnHandle_t handle,
             }
 
 			cudaMemcpy(h_A, A_d, lda*N*sizeof(float), cudaMemcpyDeviceToHost);
+			cudaMemcpy(ipiv_h, ipiv_d, min_mn*sizeof(float), cudaMemcpyDeviceToHost);
+
             /* =====================================================================
                Check the factorization
                =================================================================== */
@@ -206,7 +271,7 @@ cusolverDnSgetrf(cusolverDnHandle_t handle,
             }
 
 			if ( check ) {
-//                error = get_LU_error(opts, M, N, h_A, lda, ipiv);
+//                error = get_LU_error(opts, M, N, h_A, lda, ipiv_h);
                 printf("   %8.2e   %s\n", error, (error < tol ? "ok" : "failed"));
                 status += ! (error < tol);
             }
