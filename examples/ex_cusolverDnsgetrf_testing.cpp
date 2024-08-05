@@ -4,6 +4,10 @@
 #include <sys/time.h>
 
 #include "lapack.h"
+
+#include <cusolverDn.h>
+#include <cublas_v2.h>
+
 //int sgetrf_( int* M, int* N, float* h_A, int* lda, int* ipiv, int* info);
 
 
@@ -32,12 +36,12 @@ double sover_wtime( void )
 }
 
 /***************************************************************************//**
-    @return String describing MAGMA errors (magma_int_t).
+    @return String describing CUSOLVER-OPEN errors (magma_int_t).
 
     @param[in]
     err     Error code.
 
-    @ingroup magma_error
+    @ingroup cusolver_error
 *******************************************************************************/
 extern "C"
 const char* solver_strerror( int err )
@@ -60,6 +64,22 @@ const char* solver_strerror( int err )
     }
 }
 
+
+/***************************************************************************//**
+    @return Current wall-clock time in seconds.
+            Resolution is from gettimeofday.
+
+    @ingroup solver_wtime
+*******************************************************************************/
+extern "C"
+double solver_wtime( void )
+{
+    struct timeval t;
+    gettimeofday( &t, NULL );
+    return t.tv_sec + t.tv_usec*1e-6;
+}
+
+
 //先写一个一摸一样的，cusolver 版本的 app
 int main()
 {
@@ -76,9 +96,12 @@ int main()
 	//opts.tolerance * lapackf77_slamch("E");
 	int check = 1;
 	bool lapack = false;
+	lapack = true;
 
+	int version = 1;
 
-    printf("%% ngpu %lld, version %lld\n", (long long) 1, (long long) 1 );
+    printf("%% ngpu %lld, version %lld\n", (long long) 1, (long long) version);
+
     if ( check == 2 ) {
         printf("%%   M     N   CPU Gflop/s (sec)   GPU Gflop/s (sec)   |Ax-b|/(N*|A|*|x|)\n");
     }
@@ -90,12 +113,17 @@ int main()
 	int msize[10] = { 1088, 2112, 3136, 4160, 5184, 6208, 7232, 8256, 9280, 10304};
 	int nsize[10] = { 1088, 2112, 3136, 4160, 5184, 6208, 7232, 8256, 9280, 10304};
 
+	cusolverDnHandle_t cusolverDnHan = nullptr;
+	cusolverDnCreate(&cusolverDnHan);
+
+	int bufferSize = 0;
+
     for( int itest = 0; itest < 10; ++itest ) {
         for( int iter = 0; iter < 1; ++iter ) {
 			M = msize[itest];
 			N = nsize[itest];
 			min_mn = std::min(M, N);
-			printf("min_nm = %5d\n", min_mn);
+			//printf("min_nm = %5d\n", min_mn);
 			lda = M;
 			n2 = lda*N;
 			gflops = FLOPS_SGETRF(M, N)/1e9;
@@ -115,19 +143,91 @@ int main()
                     printf("lapackf77_sgetrf returned error %lld: %s.\n",
                            (long long) info, solver_strerror( info ));
                 }
-				;//... ...
 			}
+            /* ====================================================================
+               Performs operation using cusolver-open
+               =================================================================== */
+			srand_rand_float(2024, h_A, lda*N);
+			if (version == 2) {
+                // no pivoting versions, so set ipiv to identity
+                for (int i=0; i < min_mn; ++i ) {
+                    ipiv[i] = i+1;
+                }
+            }
+			float *A_d = nullptr;
+			cudaMalloc((void**)&A_d, lda*N*sizeof(float));
+			cudaMemcpy(A_d, h_A, lda*N*sizeof(float), cudaMemcpyHostToDevice);
+/*
+cusolverStatus_t
+cusolverDnSgetrf_bufferSize(cusolverDnHandle_t handle,
+							int m,int n,float *A,int lda,int *Lwork );
+*/
+/*
+cusolverStatus_t
+cusolverDnSgetrf(cusolverDnHandle_t handle,
+				int m,int n,float *A,int lda,float *Workspace,int *devIpiv,int *devInfo );
+*/
+
+			cusolverDnSgetrf_bufferSize(cusolverDnHan, M, N, A_d, lda, &bufferSize);
+
+			float *Workspace = nullptr;
+			int *info_d = nullptr;
+			int *ipiv_d = nullptr;
+
+			cudaMalloc((void**)&Workspace, bufferSize*sizeof(float));
+			cudaMalloc((void**)info_d, sizeof(int));
+			cudaMalloc((void**)ipiv_d, min_mn*sizeof(int));
+
+			gpu_time = sover_wtime();
+            if (version == 1) {
+                cusolverDnSgetrf(cusolverDnHan, M, N, h_A, lda, Workspace, ipiv_d, info_d);
+            }
+            else if (version == 2) {
+                cusolverDnSgetrf(cusolverDnHan, M, N, h_A, lda, Workspace, nullptr, info_d);
+            }
+            gpu_time = sover_wtime() - gpu_time;
+            gpu_perf = gflops / gpu_time;
+            if (info != 0) {
+                printf("cusolverDnSgetrf returned error %lld: %s.\n",
+                       (long long) info, solver_strerror( info ));
+            }
+
+			cudaMemcpy(h_A, A_d, lda*N*sizeof(float), cudaMemcpyDeviceToHost);
+            /* =====================================================================
+               Check the factorization
+               =================================================================== */
+            if(lapack) {
+                printf("%5lld %5lld   %7.2f (%7.2f)   %7.2f (%7.2f)",
+                       (long long) M, (long long) N, cpu_perf, cpu_time, gpu_perf, gpu_time );
+            }
+            else {
+                printf("%5lld %5lld     ---   (  ---  )   %7.2f (%7.2f)",
+                       (long long) M, (long long) N, gpu_perf, gpu_time );
+            }
+
+			if ( check ) {
+//                error = get_LU_error(opts, M, N, h_A, lda, ipiv);
+                printf("   %8.2e   %s\n", error, (error < tol ? "ok" : "failed"));
+                status += ! (error < tol);
+            }
+            else {
+                printf("     ---   \n");
+            }
 
 
 
-
-
-
-
-
-
-
-
+			if(A_d != nullptr){
+				cudaFree(A_d);
+				A_d = nullptr;
+			}
+			if(Workspace != nullptr){
+				cudaFree(Workspace);
+				Workspace = nullptr;
+			}
+			if(info_d != nullptr){
+				cudaFree(info_d);
+				info_d = nullptr;
+			}
 
 			free(ipiv);	ipiv = nullptr;
 			free(h_A);	h_A = nullptr;
