@@ -3,15 +3,27 @@
 #include "multi_thread_mt19937_64_rand.h"
 #include <sys/time.h>
 
-#include "lapack.h"
+//#include "lapack.h"
+//#include "cblas.h"
+//#include "f77blas.h"
 
 #include <cusolverDn.h>
 #include <cublas_v2.h>
 
 #define SEED_A (2024)
-
-//int sgetrf_( int* M, int* N, float* h_A, int* lda, int* ipiv, int* info);
-
+extern "C"
+{
+int sgetrf_( int* M, int* N, float* h_A, int* lda, int* ipiv, int* info);
+float slange_(char* norm, int* M, int* N, float* A, int* lda, float* work);
+//REAL             FUNCTION SLANGE( NORM, M, N, A, LDA, WORK )
+void slaswp_(int* N, float* A, int* lda, int* k1, int* k2, int* ipiv, int* incx);
+//SUBROUTINE SLASWP( N, A, LDA, K1, K2, IPIV, INCX )
+void slacpy_(char* UPLO, int* M, int* N, float* A, int* lda, float* B, int* ldb);
+//SUBROUTINE SLACPY( UPLO, M, N, A, LDA, B, LDB )
+extern "C"
+void sgemm_(char *, char *, int *, int *, int *, float *,
+           float  *, int *, float  *, int *, float  *, float  *, int *);
+}
 
 #define FMULS_GETRF(m_, n_) ( ((m_) < (n_)) \
     ? (0.5 * (m_) * ((m_) * ((n_) - (1./3.) * (m_) - 1. ) + (n_)) + (2. / 3.) * (m_)) \
@@ -66,18 +78,13 @@ const char* solver_strerror( int err )
     }
 }
 
-
 /***************************************************************************//**
     @return Current wall-clock time in seconds.
             Resolution is from gettimeofday.
 
     @ingroup solver_wtime
 *******************************************************************************/
-/*
-void F77_sgemm(char *transpa, char *transpb, int *m, int *n,
-              int *k, float *alpha, float *a, int *lda, float *b, int *ldb,
-              float *beta, float *c, int *ldc );
-			  */
+
 extern "C"
 double solver_wtime( void )
 {
@@ -113,41 +120,43 @@ float get_LU_error(
 
 	// set the same original matrix A
 	srand_rand_float(SEED_A, A, lda*N);
-	//int BLASFUNC(slaswp)(blasint *, float  *, blasint *, blasint *, blasint *, blasint *, blasint *);
 	slaswp_(&N, A, &lda, &ione, &min_mn, ipiv, &ione);
 
     // copy LU to L and U, and set diagonal to 1// start
-    slacpy_("L", &M, &min_mn, LU, &lda, L, &M      ,1);
-    slacpy_("U", &min_mn, &N, LU, &lda, U, &min_mn ,1);
+    slacpy_("L", &M, &min_mn, LU, &lda, L, &M);
+    slacpy_("U", &min_mn, &N, LU, &lda, U, &min_mn);
 	for(j=0; j<min_mn; j++)
 		L[j + j*M] = 1.0f;
-	//float LAPACKE_slange( int matrix_layout, char norm, lapack_int m,
-//                           lapack_int n, const float* a, lapack_int lda );
-	matnorm = slange_("F", &M, &N, A, &lda, work, 4);
 
-	//F77_sgemm("N", "N", &M, &N, &min_mn, &alpha, L, &M, U, &min_mn, &beta, LU, &lda);
+	matnorm = slange_("F", &M, &N, A, &lda, work);
 
+//	cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, M, N, min_mn, alpha, L, M, U, min_mn, beta, LU, min_mn);
+	sgemm_("N", "N", &M, &N, &min_mn, &alpha, L, &M, U, &min_mn, &beta, LU, &min_mn);
+   	for( j = 0; j < N; j++ ) {
+        for( i = 0; i < M; i++ ) {
+            LU[i+j*lda] = LU[i+j*lda] - A[i+j*lda];
+        }
+    }
 
+    residual = slange_("F", &M, &N, LU, &lda, work);
 
-	free(A);
-	free(L);
-	free(U);
+	if(A != nullptr){free(A); A = nullptr;}
+	if(L != nullptr){free(L); L = nullptr;}
+	if(U != nullptr){free(U); U = nullptr;}
 
     return residual / (matnorm * N);
 }
 
-
-
-//先写一个一摸一样的，cusolver 版本的 app
 int main()
 {
 	cusolver_print_environment();
 
     double   gflops, gpu_perf, gpu_time, cpu_perf=0, cpu_time=0;
     float          error;
-    float *h_A;
-    int     *ipiv;
-    int     M, N, n2, lda, info, min_mn;
+    float *A_h;
+    int *piv_d = nullptr;
+	int *piv_h = nullptr;
+    int M, N, n2, lda, info, min_mn;
     int status = 0;
 
     float tol = tol = 0.000001788139343;
@@ -168,8 +177,11 @@ int main()
     }
     printf("%%========================================================================\n");
 
-	int msize[10] = { 1088, 2112, 3136, 4160, 5184, 6208, 7232, 8256, 9280, 10304};
-	int nsize[10] = { 1088, 2112, 3136, 4160, 5184, 6208, 7232, 8256, 9280, 10304};
+	//int msize[10] = { 1088, 2112, 3136, 4160, 5184, 6208, 7232, 8256, 9280, 10304};
+	//int nsize[10] = { 1088, 2112, 3136, 4160, 5184, 6208, 7232, 8256, 9280, 10304};
+
+	int msize[10] = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+	int nsize[10] = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
 
 	cusolverDnHandle_t cusolverDnHan = nullptr;
 	cusolverDnCreate(&cusolverDnHan);
@@ -181,20 +193,19 @@ int main()
 			M = msize[itest];
 			N = nsize[itest];
 			min_mn = std::min(M, N);
-			//printf("min_nm = %5d\n", min_mn);
 			lda = M;
 			n2 = lda*N;
 			gflops = FLOPS_SGETRF(M, N)/1e9;
-			ipiv = (int*)malloc(min_mn*sizeof(int));
-			h_A = (float*)malloc(lda*N*sizeof(float*));
-			if(ipiv == nullptr || h_A == nullptr){
+			piv_h = (int*)malloc(min_mn*sizeof(int));
+			A_h = (float*)malloc(lda*N*sizeof(float*));
+			if(piv_h == nullptr || A_h == nullptr){
 				printf("Something error...\n");
 			}
 			if(lapack){
-				srand_rand_float(2024, h_A, lda*N);
+				srand_rand_float(2024, A_h, lda*N);
 				cpu_time = sover_wtime();
 				//lapackf77_
-				sgetrf_( &M, &N, h_A, &lda, ipiv, &info );
+				sgetrf_( &M, &N, A_h, &lda, piv_h, &info );
 				cpu_time = sover_wtime() - cpu_time;
                 cpu_perf = gflops / cpu_time;
                 if (info != 0) {
@@ -205,48 +216,34 @@ int main()
             /* ====================================================================
                Performs operation using cusolver-open
                =================================================================== */
-			srand_rand_float(SEED_A, h_A, lda*N);
+			srand_rand_float(SEED_A, A_h, lda*N);
 			if (version == 2) {
                 // no pivoting versions, so set ipiv to identity
                 for (int i=0; i < min_mn; ++i ) {
-                    ipiv[i] = i+1;
+                    piv_h[i] = i+1;
                 }
             }
 			float *A_d = nullptr;
 			cudaMalloc((void**)&A_d, lda*N*sizeof(float));
-			cudaMemcpy(A_d, h_A, lda*N*sizeof(float), cudaMemcpyHostToDevice);
-/*
-cusolverStatus_t
-cusolverDnSgetrf_bufferSize(cusolverDnHandle_t handle,
-							int m,int n,float *A,int lda,int *Lwork );
-*/
-/*
-cusolverStatus_t
-cusolverDnSgetrf(cusolverDnHandle_t handle,
-				int m,int n,float *A,int lda,float *Workspace,int *devIpiv,int *devInfo );
-*/
+			cudaMemcpy(A_d, A_h, lda*N*sizeof(float), cudaMemcpyHostToDevice);
 
 			cusolverDnSgetrf_bufferSize(cusolverDnHan, M, N, A_d, lda, &bufferSize);
 
 			float *Workspace = nullptr;
 			int *info_d = nullptr;
-			int *ipiv_d = nullptr;
 			int *info_h = nullptr;
-			int *ipiv_h = nullptr;
-
 
 			cudaMalloc((void**)&Workspace, bufferSize*sizeof(float));
 			cudaMalloc((void**)info_d, sizeof(int));
-			cudaMalloc((void**)ipiv_d, min_mn*sizeof(int));
+			cudaMalloc((void**)piv_d, min_mn*sizeof(int));
 			info_h = (int*)malloc(sizeof(int));
-			ipiv_h = (int*)malloc(min_mn*sizeof(int));
 
 			gpu_time = sover_wtime();
             if (version == 1) {
-                cusolverDnSgetrf(cusolverDnHan, M, N, h_A, lda, Workspace, ipiv_d, info_d);
+                cusolverDnSgetrf(cusolverDnHan, M, N, A_h, lda, Workspace, piv_d, info_d);
             }
             else if (version == 2) {
-                cusolverDnSgetrf(cusolverDnHan, M, N, h_A, lda, Workspace, nullptr, info_d);
+                cusolverDnSgetrf(cusolverDnHan, M, N, A_h, lda, Workspace, nullptr, info_d);
             }
             gpu_time = sover_wtime() - gpu_time;
             gpu_perf = gflops / gpu_time;
@@ -255,8 +252,8 @@ cusolverDnSgetrf(cusolverDnHandle_t handle,
                        (long long) info, solver_strerror( info ));
             }
 
-			cudaMemcpy(h_A, A_d, lda*N*sizeof(float), cudaMemcpyDeviceToHost);
-			cudaMemcpy(ipiv_h, ipiv_d, min_mn*sizeof(float), cudaMemcpyDeviceToHost);
+			cudaMemcpy(A_h, A_d, lda*N*sizeof(float), cudaMemcpyDeviceToHost);
+			cudaMemcpy(piv_h, piv_d, min_mn*sizeof(float), cudaMemcpyDeviceToHost);
 
             /* =====================================================================
                Check the factorization
@@ -271,7 +268,7 @@ cusolverDnSgetrf(cusolverDnHandle_t handle,
             }
 
 			if ( check ) {
-//                error = get_LU_error(opts, M, N, h_A, lda, ipiv_h);
+                error = get_LU_error(M, N, A_h, lda, piv_h);
                 printf("   %8.2e   %s\n", error, (error < tol ? "ok" : "failed"));
                 status += ! (error < tol);
             }
@@ -279,40 +276,15 @@ cusolverDnSgetrf(cusolverDnHandle_t handle,
                 printf("     ---   \n");
             }
 
+			if(A_d			!= nullptr){cudaFree(A_d);			A_d			= nullptr;}
+			if(Workspace	!= nullptr){cudaFree(Workspace);	Workspace	= nullptr;}
+			if(info_d		!= nullptr){cudaFree(info_d);		info_d		= nullptr;}
 
-
-			if(A_d != nullptr){
-				cudaFree(A_d);
-				A_d = nullptr;
-			}
-			if(Workspace != nullptr){
-				cudaFree(Workspace);
-				Workspace = nullptr;
-			}
-			if(info_d != nullptr){
-				cudaFree(info_d);
-				info_d = nullptr;
-			}
-
-			free(ipiv);	ipiv = nullptr;
-			free(h_A);	h_A = nullptr;
+			if(piv_h		!= nullptr){free(piv_h);			piv_h		= nullptr;}
+			if(A_h			!= nullptr){free(A_h);				A_h			= nullptr;}
+			if(info_h		!= nullptr){free(info_h);			info_h		= nullptr;}
 		}
 	}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 	return 0;
 }
