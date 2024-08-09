@@ -27,7 +27,7 @@ float slange_(char *norm, signed long int *M, signed long int *N, float *A,
               signed long int *lda, float *work);
 // REAL             FUNCTION SLANGE( NORM, M, N, A, LDA, WORK )
 void slaswp_(signed long int *N, float *A, signed long int *lda,
-             signed long int *k1, signed long int *k2, signed long int *ipiv,
+             signed long int *k1, signed long int *k2, int *ipiv,
              signed long int *incx);
 // SUBROUTINE SLASWP( N, A, LDA, K1, K2, IPIV, INCX )
 void slacpy_(char *UPLO, signed long int *M, signed long int *N, float *A,
@@ -107,9 +107,12 @@ void print_matrix(signed long int M, signed long int N, float *A,
     }
 }
 
-void print_int_vector(long int N, long int *A) {
+template<class T>
+void print_int_vector(long int N, T *A, long int offset) {
     for (long int i = 0; i < N; i++)
-        printf(" %ld", A[i]);
+        printf(" %ld", (long int) (A[i+offset]));
+
+	printf("\n");
 }
 
 /***************************************************************************/ /**
@@ -122,7 +125,7 @@ void print_int_vector(long int N, long int *A) {
  *******************************************************************************/
 
 float get_LU_error(signed long int M, signed long int N, float *LU,
-                   signed long int lda, signed long int *ipiv) {
+                   signed long int lda, int *ipiv) {
     signed long int min_mn = std::min(M, N);
     signed long int ione = 1;
     signed long int i, j;
@@ -248,7 +251,7 @@ int main() {
             n2 = lda * N;
             gflops = FLOPS_SGETRF(M, N) / 1e9;
             piv_h = (int *)malloc(min_mn * sizeof(int));
-			piv_h64 = (signed long int*)malloc(min_mn * sizeof(signed long int));
+			piv_h64 = (long int*)malloc(min_mn * sizeof(long int));
 
             A_h = (float *)malloc(lda * N * sizeof(float *));
             if (piv_h == nullptr || A_h == nullptr || piv_h64 == nullptr) {
@@ -267,6 +270,10 @@ int main() {
                            "error %lld: %s.\n",
                            (long long)info, solver_strerror(info));
                 }
+
+
+				//printf("\npiv_lapack = \n");				print_int_vector<int>(117, (int*)(piv_h64), 0);				printf("\n");
+
             }
             /* ====================================================================
                Performs operation using cusolver-open
@@ -316,17 +323,14 @@ int main() {
                        (long long)info, solver_strerror(info));
             }
 
-            cuda_err = cudaMemcpy(A_h, A_d, lda * N * sizeof(float),
-                       cudaMemcpyDeviceToHost);if(cuda_err != cudaSuccess){printf("007err = %d", (int)cuda_err);}
-            cuda_err = cudaMemcpy(piv_h, piv_d, min_mn * sizeof(float),
-                       cudaMemcpyDeviceToHost);if(cuda_err != cudaSuccess){printf("008err = %d", (int)cuda_err);}
-            cuda_err = cudaMemcpy(info_h, info_d, sizeof(int),
-                       cudaMemcpyDeviceToHost);if(cuda_err != cudaSuccess){printf("009err = %d", (int)cuda_err);}
-            cuda_err = cudaDeviceSynchronize();if(cuda_err != cudaSuccess){printf("010err = %d", (int)cuda_err);}
+            cuda_err = cudaMemcpy(A_h, A_d, lda * N * sizeof(float), cudaMemcpyDeviceToHost); 		if(cuda_err != cudaSuccess){printf("007err = %d", (int)cuda_err);}
+            cuda_err = cudaMemcpy(piv_h, piv_d, min_mn * sizeof(float), cudaMemcpyDeviceToHost); 	if(cuda_err != cudaSuccess){printf("008err = %d", (int)cuda_err);}
+            cuda_err = cudaMemcpy(info_h, info_d, sizeof(int), cudaMemcpyDeviceToHost);				if(cuda_err != cudaSuccess){printf("009err = %d", (int)cuda_err);}
+            cuda_err = cudaDeviceSynchronize();														if(cuda_err != cudaSuccess){printf("010err = %d", (int)cuda_err);}
 			trans_i32_2_i64(piv_h64, piv_h, min_mn);
 
-            //printf("piv_h64 = \n");            print_int_vector(min_mn / 1000, piv_h64);
-            printf("info_h = %d\n", info_h);            printf("\n");
+            //printf("piv_h64 = \n");            print_int_vector<long int>(117, piv_h64, 0);
+            printf("\ninfo_h = %d\n", info_h);            printf("\n");
 
             /* =====================================================================
                Check the factorization
@@ -344,7 +348,7 @@ int main() {
             }
 
             if (check) {
-                error = get_LU_error(M, N, A_h, lda, piv_h64);
+                error = get_LU_error(M, N, A_h, lda, piv_h);
                 printf("   %8.2e   %s\n", error,
                        (error < tol ? "ok" : "failed"));
                 status += !(error < tol);
