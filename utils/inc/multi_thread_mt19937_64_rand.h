@@ -102,7 +102,8 @@ unsigned long long genrand64_int64(void)
 {
     int i;
     unsigned long long x;
-    static unsigned long long mag01[2]={0ULL, MATRIX_A};
+    //static
+    unsigned long long mag01[2]={0ULL, MATRIX_A};
 
     if (mti >= NN) { /* generate NN words at one time */
 
@@ -140,13 +141,24 @@ unsigned long long genrand64_int64(void)
 
 
 #endif
+
+
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////
+
+
 ////////////////////////////////////////////////////////////////////////
 //#define NN 312
 #include <mutex>
 
 //using namespace std;
 // multi thread accelerating， to be singleton
-template <int NN>
+template <unsigned long NN>
 class parallel_mt19937{
 public:
     static parallel_mt19937* GetInstance();
@@ -165,12 +177,12 @@ private:
     static std::mutex _mutex; // lock for thread-safe
 
 };
-template<int NN>
+template<unsigned long NN>
 parallel_mt19937<NN> *parallel_mt19937<NN>::_p_parallel_mt19937 = nullptr;
-template<int NN>
+template<unsigned long NN>
 std::mutex parallel_mt19937<NN>::_mutex;
 
-template<int NN>
+template<unsigned long NN>
 parallel_mt19937<NN> *parallel_mt19937<NN>::GetInstance()
 {
      if (_p_parallel_mt19937 == nullptr) {
@@ -179,10 +191,11 @@ parallel_mt19937<NN> *parallel_mt19937<NN>::GetInstance()
              _p_parallel_mt19937 = new parallel_mt19937<NN>();
          }
       }
+
       return _p_parallel_mt19937;
 }
 
-template<int NN>
+template<unsigned long NN>
 void parallel_mt19937<NN>::DestoryInstance()
 {
         if (_p_parallel_mt19937 != nullptr) {
@@ -195,37 +208,41 @@ void parallel_mt19937<NN>::DestoryInstance()
 }
 
 //int pmt19937::_base_seed = 0;
-template<int NN>
+template<unsigned long NN>
 void parallel_mt19937<NN>::rand_float(float* A, unsigned long len)
 {
+
+    unsigned long tile_count = (len+NN-1)/NN;
+
     #pragma omp parallel
     {
         unsigned long block_dim = omp_get_num_threads();
         unsigned long thid = omp_get_thread_num();
 
-        if(thid == block_dim -1)
-            std::cout << "Here are " << block_dim << " threads generating random number ..."<<std::endl;
-        unsigned long tile_count = (len+NN-1)/NN;
-
         thread_mt199937<NN, NN/2, 0xB5026F5AA96619E9ULL, 0xFFFFFFFF80000000ULL, 0x7FFFFFFFULL> *t_mt_p
             = new thread_mt199937<NN, NN/2, 0xB5026F5AA96619E9ULL, 0xFFFFFFFF80000000ULL, 0x7FFFFFFFULL>();// to be singleton
 
-        for(unsigned long tile_id=thid; tile_id<tile_count; tile_id+=block_dim){
+        for(unsigned long tile_id=thid; tile_id<tile_count; tile_id+=block_dim)
+        {
             //each tile has a specific seed: (_base_seed + tile_id) to smt19937, to keep consistence
-            unsigned long tile_seed = _base_seed + tile_id*2046;
+            unsigned long tile_seed = _base_seed + tile_id;//*2046;
             t_mt_p->srand(tile_seed);
 
-            //if(thid == 35)                std::cout << "Hello from thread " << thid << std::endl;
             unsigned long tile_idx_start = tile_id*NN;
-            unsigned long tile_idx_end = (((tile_id+1)*NN) <= len)? (tile_id+1)*NN: len;
+            unsigned long tile_idx_END  = tile_idx_start + NN;
+            unsigned long tile_idx_end = ((tile_idx_END) <= len)? (tile_idx_END-1) : len-1;
 
-            for(unsigned long idx = tile_idx_start; idx<tile_idx_end; idx++)
+            for(unsigned long idx = tile_idx_start; idx<=tile_idx_end; idx++)
+            {
+                //A[idx]=float(idx);
                 A[idx] = float(t_mt_p->genrand64_real2());
+
+            }
+
         }
         delete t_mt_p;
     }
 }
-
 
 void srand_rand_float(int seed, float* A, unsigned long int len);
 
