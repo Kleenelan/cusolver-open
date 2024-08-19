@@ -1,5 +1,7 @@
 
-EXE := ex_cusolverDnsgetrf_testing
+EXE := ex_cusolverDnsgeqrf_testing
+#EXE := ex_cusolverDnsgetrf_testing
+#EXE :=  hello_sgetrf_lapack
 
 UTILS_SRC := ../utils/cusolver_env.cpp \
 			 ../utils/multi_thread_mt19937_64_rand.cpp
@@ -9,7 +11,7 @@ all: $(EXE)
 
 #%: %.cpp $(UTILS_SRC) ../tdd/third-party/openblas/local/lib/libopenblas.a
 %: %.cpp $(UTILS_SRC)
-	g++ -fopenmp $^  -o $@ $(INC) $(LD_FLAGS)
+	g++ -std=c++11 -g -fopenmp $^  -o $@ $(INC) $(LD_FLAGS)
 
 INC := -I/usr/local/cuda/include -I ../utils/inc/
 INC += -I../tdd/third-party/openblas/local/include/
